@@ -7,70 +7,77 @@
 #include <queue>
 #include <vector>
 #include <memory>
-namespace ThreadPool {
-#define THREADPOOL_RUNNING      0
-#define THREADPOOL_STOP         1
-#define THREADPOOL_SHUTDOWN     2
-enum THREADPOOL_ENUM{
-    THREADPOOL_OK,
+namespace THREADPOOL {
+
+enum ERROR {
+    THREADPOOL_OK = 0,
     THREADPOOL_ERR,
     THREADPOOL_NULL,
     THREADPOOL_SIZE_ERR,
-    THREADPOOL_MEM_ERR
+    THREADPOOL_MEERR
 };
-    class Task {
-        public:
-            Task(){}
-            virtual ~Task(){}
-            virtual void execute() = 0;
+class Task
+{
+public:
+    Task(){}
+    virtual ~Task(){}
+    virtual void execute() = 0;
+};
+class TaskQueue
+{
+public:
+    TaskQueue(){}
+    ~TaskQueue(){}
+    void setMaxQueueLen(unsigned int maxQueueLen);
+    void addTask(std::unique_lock<std::mutex>& ulock, std::shared_ptr<Task> spTask);
+    std::shared_ptr<Task> getTask(std::unique_lock<std::mutex>& ulock, unsigned int state);
+    void close(std::unique_lock<std::mutex>& ulock);
+    unsigned int size();
+private:
+    bool isFull();
+    bool isNotFull();
+    bool isEmpty();
+    bool isNotEmpty();
+    unsigned int maxQueueLen;
+    unsigned int aliveThreadNum;
+    std::condition_variable fullCondit;
+    std::condition_variable notFullCondit;
+    std::condition_variable emptyCondit;
+    std::condition_variable notEmptyCondit;
+    std::queue<std::shared_ptr<Task> > tasks;
+};
+class ThreadPool
+{
+public:
+    enum STATE {
+        RUNNING = 0,
+        STOP,
+        SHUTDOWN
     };
-    class TaskQueue {
-        public:
-            TaskQueue(){}
-            ~TaskQueue(){}
-            void setMaxQueueLen(unsigned int maxQueueLen);
-            void addTask(std::unique_lock<std::mutex>& ulock, std::shared_ptr<Task> spTask);
-            std::shared_ptr<Task> getTask(std::unique_lock<std::mutex>& ulock, unsigned int state);
-            void close(std::unique_lock<std::mutex>& ulock);
-            unsigned int size();
-        private:
-            bool isFull();
-            bool isNotFull();
-            bool isEmpty();
-            bool isNotEmpty();
-            unsigned int m_maxQueueLen;
-            unsigned int m_aliveThreadNum;
-            std::condition_variable m_fullCondit;
-            std::condition_variable m_notFullCondit;
-            std::condition_variable m_emptyCondit;
-            std::condition_variable m_notEmptyCondit;
-            std::queue<std::shared_ptr<Task> > m_tasks;
-    };
-    class TPool {
-        public:
-            TPool(){}
-            ~TPool();
-            int createThread(unsigned int minThreadNum, unsigned int maxThreadNum, unsigned int maxQueueLen);
-            int addTask(std::shared_ptr<Task> spTask);
-            int getThreadNum();
-            void start();
-            void stop();
-            void shutdown();
+public:
+    ThreadPool(){}
+    ~ThreadPool();
+    int createThread(unsigned int minThreadNum, unsigned int maxThreadNum, unsigned int maxQueueLen);
+    int addTask(std::shared_ptr<Task> spTask);
+    int getThreadNum();
+    void start();
+    void stop();
+    void shutdown();
 #define addTaskToPool(spTask) addTask(std::shared_ptr<Task>(spTask))
-        private:
-            void working();
-            void admin();
-            unsigned int m_state;
-            unsigned int m_minThreadNum;
-            unsigned int m_maxThreadNum;
-            unsigned int m_aliveThreadNum;
-            unsigned int m_maxQueueLen;
-            TaskQueue m_taskQueue;
-            std::thread m_adminThread;
-            std::vector<std::unique_ptr<std::thread> > m_threads;
-            std::mutex m_mutex;
-            std::condition_variable m_startCondit;
-            std::condition_variable m_zeroThreadCondit;
-    };
+private:
+    void working();
+    void admin();
+    STATE state;
+    int minThreadNum;
+    int maxThreadNum;
+    int aliveThreadNum;
+    int maxQueueLen;
+    TaskQueue taskQueue;
+    std::thread adminThread;
+    std::vector<std::unique_ptr<std::thread> > threads;
+    std::mutex mutex;
+    std::condition_variable startCondit;
+    std::condition_variable zeroThreadCondit;
+};
 }
 #endif // THREADPOOL_H

@@ -1,233 +1,233 @@
 #include "threadpool.h"
-using namespace ThreadPool;
-void TaskQueue::setMaxQueueLen(unsigned int maxQueueLen)
+
+void THREADPOOL::TaskQueue::setMaxQueueLen(unsigned int maxQueueLen)
 {
-    m_maxQueueLen = maxQueueLen;
+    maxQueueLen = maxQueueLen;
     return;
 }
 
-bool TaskQueue::isFull()
+bool THREADPOOL::TaskQueue::isFull()
 {
-    return m_tasks.size() == m_maxQueueLen;
+    return tasks.size() == maxQueueLen;
 }
 
-bool TaskQueue::isNotFull()
+bool THREADPOOL::TaskQueue::isNotFull()
 {
-    return m_tasks.size() < m_maxQueueLen;
+    return tasks.size() < maxQueueLen;
 }
 
-bool TaskQueue::isEmpty()
+bool THREADPOOL::TaskQueue::isEmpty()
 {
-    return m_tasks.size() == 0;
+    return tasks.size() == 0;
 }
 
-bool TaskQueue::isNotEmpty()
+bool THREADPOOL::TaskQueue::isNotEmpty()
 {
-    return m_tasks.size() > 0;
+    return tasks.size() > 0;
 }
 
-void TaskQueue::addTask(std::unique_lock<std::mutex>& ulock, std::shared_ptr<Task> spTask)
+void THREADPOOL::TaskQueue::addTask(std::unique_lock<std::mutex>& ulock, std::shared_ptr<Task> spTask)
 {
     /* wait queue not full when queue is full */
     while (TaskQueue::isFull()) {
         std::cout<<"queue is full"<<std::endl;
-        m_notFullCondit.wait(ulock);
+        notFullCondit.wait(ulock);
     }
     /* add task */
-    m_tasks.push(spTask);
+    tasks.push(spTask);
     /* if queue is not empty broadcast all thread to get task */
     if (TaskQueue::isNotEmpty()) {
-        m_notEmptyCondit.notify_all(); 
+        notEmptyCondit.notify_all();
     }
     return;
 }
 
-std::shared_ptr<Task> TaskQueue::getTask(std::unique_lock<std::mutex>& ulock, unsigned int state)
+std::shared_ptr<THREADPOOL::Task> THREADPOOL::TaskQueue::getTask(std::unique_lock<std::mutex>& ulock, unsigned int state)
 {
     /* wait queue not empty when queue is empty */
-    while (TaskQueue::isEmpty() && state == THREADPOOL_RUNNING) {
+    while (TaskQueue::isEmpty() && state == ThreadPool::RUNNING) {
         std::cout<<"queue is empty"<<std::endl;
-        m_notEmptyCondit.wait(ulock);
+        notEmptyCondit.wait(ulock);
     }
-    if (state == THREADPOOL_SHUTDOWN) {
-        return NULL;
+    if (state == ThreadPool::SHUTDOWN) {
+        return nullptr;
     }
     /* get task from queue */
-    std::shared_ptr<Task> spTask = std::move(m_tasks.front());
-    m_tasks.pop();
+    std::shared_ptr<Task> spTask = std::move(tasks.front());
+    tasks.pop();
     /* if queue is not full, signal to add task  */
     if (TaskQueue::isNotFull()) {
-        m_notFullCondit.notify_all();
+        notFullCondit.notify_all();
     }
     /* if queue is empty, signal main thread */
     if (TaskQueue::isEmpty()) {
-        m_emptyCondit.notify_one();
+        emptyCondit.notify_one();
     }
     return spTask;
 }
 
-void TaskQueue::close(std::unique_lock<std::mutex>& ulock)
+void THREADPOOL::TaskQueue::close(std::unique_lock<std::mutex>& ulock)
 {
     /* stop adding task */
-    m_notEmptyCondit.notify_all();
+    notEmptyCondit.notify_all();
     while (TaskQueue::isNotEmpty()) {
-        m_emptyCondit.wait(ulock);
+        emptyCondit.wait(ulock);
     }
     return;
 }
 
-unsigned int TaskQueue::size()
+unsigned int THREADPOOL::TaskQueue::size()
 {
-    return m_tasks.size();
+    return tasks.size();
 }
 
-TPool::~TPool()
+THREADPOOL::ThreadPool::~ThreadPool()
 {
     /* join admin thread */
-    m_adminThread.join();
+    adminThread.join();
 }
 
-int TPool::createThread(unsigned int minThreadNum, unsigned int maxThreadNum, unsigned int maxQueueLen)
+int THREADPOOL::ThreadPool::createThread(unsigned int minThreadNum, unsigned int maxThreadNum, unsigned int maxQueueLen)
 {
     if (minThreadNum > maxThreadNum) {
         return THREADPOOL_SIZE_ERR;
     }
-    m_minThreadNum = minThreadNum;
-    m_maxThreadNum = maxThreadNum;
-    m_aliveThreadNum = 0;
-    m_maxQueueLen = maxQueueLen;
-    m_state = THREADPOOL_STOP;
-    std::lock_guard<std::mutex> lockguard(m_mutex);
+    this->minThreadNum = minThreadNum;
+    this->maxThreadNum = maxThreadNum;
+    aliveThreadNum = 0;
+    this->maxQueueLen = maxQueueLen;
+    state = STOP;
+    std::lock_guard<std::mutex> lockguard(mutex);
     /* init task queue */
-    m_taskQueue.setMaxQueueLen(m_maxQueueLen);
+    taskQueue.setMaxQueueLen(maxQueueLen);
     /* create working thread */
-    for (unsigned int i = 0; i < m_minThreadNum; i++) {
-        std::thread* pThread = new std::thread(&TPool::working, this);
+    for (unsigned int i = 0; i < minThreadNum; i++) {
+        std::thread* pThread = new std::thread(&ThreadPool::working, this);
         pThread->detach();
-        m_aliveThreadNum++;
-        m_threads.push_back(std::unique_ptr<std::thread>(pThread));
+        aliveThreadNum++;
+        threads.push_back(std::unique_ptr<std::thread>(pThread));
     }
     /* create admin thread */
-    m_adminThread = std::thread(&TPool::admin, this);
+    adminThread = std::thread(&ThreadPool::admin, this);
     return THREADPOOL_OK;
 }
 
-int TPool::addTask(std::shared_ptr<Task> spTask)
+int THREADPOOL::ThreadPool::addTask(std::shared_ptr<Task> spTask)
 {
-    if (spTask == NULL) {
+    if (spTask == nullptr) {
         return THREADPOOL_NULL;
     }
-    std::unique_lock<std::mutex> ulock(m_mutex);
-    if (m_state == THREADPOOL_SHUTDOWN) {
+    std::unique_lock<std::mutex> ulock(mutex);
+    if (state == SHUTDOWN) {
         return THREADPOOL_OK;
     }
-    m_taskQueue.addTask(ulock, spTask);
+    taskQueue.addTask(ulock, spTask);
     return THREADPOOL_OK;
 }
 
-void TPool::start()
+void THREADPOOL::ThreadPool::start()
 {
     /* broadcast all thread to start */
-    std::lock_guard<std::mutex> lockguard(m_mutex);
-    m_state = THREADPOOL_RUNNING;
-    m_startCondit.notify_all();
+    std::lock_guard<std::mutex> lockguard(mutex);
+    state = RUNNING;
+    startCondit.notify_all();
     return;
 }
 
-void TPool::stop()
+void THREADPOOL::ThreadPool::stop()
 {
-    std::unique_lock<std::mutex> ulock(m_mutex);
+    std::unique_lock<std::mutex> ulock(mutex);
     /* close task queue */
-    m_taskQueue.close(ulock);
+    taskQueue.close(ulock);
     /* signal all thread to stop */
-    m_state = THREADPOOL_STOP;
+    state = STOP;
     return;
 }
 
-void TPool::shutdown()
+void THREADPOOL::ThreadPool::shutdown()
 {
-    std::unique_lock<std::mutex> ulock(m_mutex);
+    std::unique_lock<std::mutex> ulock(mutex);
     /* close task queue */
-    m_taskQueue.close(ulock);
+    taskQueue.close(ulock);
     /* shutdown */
-    m_state = THREADPOOL_SHUTDOWN;
+    state = SHUTDOWN;
     /* wake upa al thread to exit */
-    m_startCondit.notify_all();
+    startCondit.notify_all();
     /* wait all thread exit */
-    while (m_aliveThreadNum > 0) {
-        m_zeroThreadCondit.wait(ulock);
+    while (aliveThreadNum > 0) {
+        zeroThreadCondit.wait(ulock);
     }
     return;
 }
 
-int TPool::getThreadNum()
+int THREADPOOL::ThreadPool::getThreadNum()
 {
     int threadNum = 0;
-    std::lock_guard<std::mutex> lockguard(m_mutex);
-    threadNum = m_threads.size();
+    std::lock_guard<std::mutex> lockguard(mutex);
+    threadNum = threads.size();
     return threadNum;
 }
 
-void TPool::working()
+void THREADPOOL::ThreadPool::working()
 {
     std::cout<<"working threaed"<<std::endl;
     while (1) {
-        std::unique_lock<std::mutex> ulock(m_mutex);
+        std::unique_lock<std::mutex> ulock(mutex);
         /* wait condition to start */
-        while (m_state == THREADPOOL_STOP) {
+        while (state == STOP) {
             std::cout<<"pool is stop"<<std::endl;
-            m_startCondit.wait(ulock);
+            startCondit.wait(ulock);
         }
         /* get task */
-        std::shared_ptr<Task> spTask = m_taskQueue.getTask(ulock, m_state);
+        std::shared_ptr<Task> spTask = taskQueue.getTask(ulock, state);
         /* execute task */
-        if (spTask != NULL) {
+        if (spTask != nullptr) {
             spTask->execute();
         }
         /* decrease thread when poo is not busy */
-        if (m_taskQueue.size() < m_maxQueueLen / 2 && m_aliveThreadNum > m_minThreadNum) {
-            m_aliveThreadNum--;
+        if (taskQueue.size() < maxQueueLen / 2 && aliveThreadNum > minThreadNum) {
+            aliveThreadNum--;
             break;
         }
-        std::cout<<"queue size "<<m_taskQueue.size()<<std::endl;
+        std::cout<<"queue size "<<taskQueue.size()<<std::endl;
         /* if all tasks have been executed, stop the pool */
-        if (m_taskQueue.size() == 0) {
+        if (taskQueue.size() == 0) {
             /* exit when pool is ready to shutdown */
-            if (m_state == THREADPOOL_SHUTDOWN) {
-                m_aliveThreadNum--;
-                if (m_aliveThreadNum == 0) {
-                    m_zeroThreadCondit.notify_one();
+            if (state == SHUTDOWN) {
+                aliveThreadNum--;
+                if (aliveThreadNum == 0) {
+                    zeroThreadCondit.notify_one();
                 }
                 break;
             } else {
-                m_state = THREADPOOL_STOP;
+                state = STOP;
             }
         }
     }
     return;
 }
 
-void TPool::admin()
+void THREADPOOL::ThreadPool::admin()
 {
     std::cout<<"admin threaed"<<std::endl;
     while (1) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        std::lock_guard<std::mutex> lockguard(m_mutex);
+        std::lock_guard<std::mutex> lockguard(mutex);
         /* wake up all thread to get task */
-        if (m_state == THREADPOOL_STOP && m_taskQueue.size() > 0 && m_threads.size() >= m_minThreadNum) {
-            m_state = THREADPOOL_RUNNING;
-            m_startCondit.notify_all();
+        if (state == STOP && taskQueue.size() > 0 && threads.size() >= minThreadNum) {
+            state = RUNNING;
+            startCondit.notify_all();
         }
         /* increase thread when pool is busy */
-        if (m_taskQueue.size() >= m_maxQueueLen && m_threads.size() < m_maxThreadNum) {
+        if (taskQueue.size() >= maxQueueLen && threads.size() < maxThreadNum) {
             std::cout<<"admin add threaed"<<std::endl;
-            std::thread* pThread = new std::thread(&TPool::working, this);
+            std::thread* pThread = new std::thread(&ThreadPool::working, this);
             pThread->detach();
-            m_aliveThreadNum++;
-            m_threads.push_back(std::unique_ptr<std::thread>(pThread));
+            aliveThreadNum++;
+            threads.push_back(std::unique_ptr<std::thread>(pThread));
         }
         /* exit when pool is shutdown */
-        if (m_state == THREADPOOL_SHUTDOWN) {
+        if (state == SHUTDOWN) {
             break;
         }
     }

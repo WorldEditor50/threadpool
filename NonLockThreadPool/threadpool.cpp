@@ -1,64 +1,62 @@
 #include "threadpool.h"
-using namespace NLTP;
 
-void Thread::createWorkingThread(unsigned int queueLen)
+void NLTP::Thread::createWorkingThread(unsigned int queueLen)
 {
-    m_alive.store(true);
+    alive.store(true);
     m_queueLen = queueLen;
     m_in = 0;
     m_out = 0;
-    m_tasks.resize(queueLen);
+    taskQueue.resize(queueLen);
     std::thread* pThread = new std::thread(&Thread::working, this);
     pThread->detach();
     m_upThread = std::unique_ptr<std::thread>(pThread);
     return;
 }
 
-void Thread::release()
+void NLTP::Thread::stop()
 {
-    m_alive.store(false);
+    alive.store(false);
     m_upThread.reset(nullptr);
     return;
 }
 
-int Thread::addTask(std::shared_ptr<Task> spTask)
+int NLTP::Thread::push(std::shared_ptr<Task> spTask)
 {
     if ((m_in + 1) % m_queueLen == m_out) {
         return -1;
     }
-    m_tasks[m_in] = std::move(spTask);
+    taskQueue[m_in] = std::move(spTask);
     m_in = (m_in + 1) % m_queueLen;
     return 0;
 }
 
-std::shared_ptr<Task> Thread::pop_back()
+std::shared_ptr<NLTP::Task> NLTP::Thread::pop_back()
 {
     std::shared_ptr<Task> spTask = nullptr;
     if (m_in != m_out) {
-        spTask = std::move(m_tasks[m_in]);
+        spTask = std::move(taskQueue[m_in]);
         m_in = (m_in - 1) % m_queueLen;
     }
     return spTask;
 }
 
-void Thread::migrate(std::shared_ptr<Thread> spThread)
+void NLTP::Thread::migrate(std::shared_ptr<Thread> spThread)
 {
     /* stop thread */
 
     /* migrate */
     std::shared_ptr<Task> spTask = nullptr;
-    int taskNum = spThread->getTaskNum();
-    for (unsigned int i = 0; i < taskNum; i++) {
-        spTask = spTask->pop_back();
+    for (int i = 0; i < spThread->queueSize(); i++) {
+        spTask = spThread->pop_back();
         if (spTask != nullptr) {
-            this->addTask(spTask);
+            this->push(spTask);
         }
     }
     spTask = spThread->pop_back();
     return;
 }
 
-int Thread::getTaskNum()
+int NLTP::Thread::queueSize()
 {
     int taskNum = 0;
     if (m_in >= m_out) {
@@ -69,14 +67,14 @@ int Thread::getTaskNum()
     return taskNum;
 }
 
-void Thread::working()
+void NLTP::Thread::working()
 {
     int num = 0;
-    while (m_alive.load()) {
+    while (alive.load()) {
         /* get task */
         std::shared_ptr<Task> spTask = nullptr; 
         if (m_in != m_out) {
-            spTask = std::move(m_tasks[m_out]);
+            spTask = std::move(taskQueue[m_out]);
             m_out = (m_out + 1) % m_queueLen;
             num++;
         }
@@ -90,7 +88,7 @@ void Thread::working()
     return;
 }
 
-int NonLockThreadPool::createThreads(unsigned int minThreadNum, unsigned int maxThreadNum, unsigned int queueLen)
+int NLTP::NonLockThreadPool::createThreads(int minThreadNum, int maxThreadNum, int queueLen)
 {
     if (minThreadNum > maxThreadNum) {
         return -1;
@@ -100,12 +98,12 @@ int NonLockThreadPool::createThreads(unsigned int minThreadNum, unsigned int max
     m_maxThreadNum = maxThreadNum;
     m_queueLen = queueLen;
     m_aliveThreadNum = 0;
-    m_policy = THREADPOOL_ROUNDROBIN;
+    policy = ROUNDROBIN;
     m_threadIndex = 0;
     m_alive.store(true);
-    m_balance.store(false);
+    doRebalance.store(false);
     /* create working thread */
-    for (unsigned int i = 0; i < m_minThreadNum; i++) {
+    for (int i = 0; i < m_minThreadNum; i++) {
         std::shared_ptr<Thread> spThread = std::make_shared<Thread>();
         spThread->createWorkingThread(queueLen);
         m_threads.push_back(spThread);
@@ -117,19 +115,19 @@ int NonLockThreadPool::createThreads(unsigned int minThreadNum, unsigned int max
     return 0;
 }
 
-void NonLockThreadPool::setPolicy(unsigned char policy)
+void NLTP::NonLockThreadPool::setPolicy(Policy p)
 {
-    m_policy = policy;
+    policy = p;
     return;
 }
 
-void NonLockThreadPool::dispatchTaskByRoundRobin(std::shared_ptr<Task> spTask)
+void NLTP::NonLockThreadPool::dispatchTaskByRoundRobin(std::shared_ptr<Task> spTask)
 {
     int ret = 1;
     int iterateNum = 0;
     while (ret != 0) {
         /* add by round-robin */
-        ret = m_threads.at(m_threadIndex)->addTask(spTask);
+        ret = m_threads.at(m_threadIndex)->push(spTask);
         m_threadIndex = (m_threadIndex + 1) % m_threads.size();
         iterateNum++;
         /* if all queue is full, then create a new thread */
@@ -146,22 +144,22 @@ void NonLockThreadPool::dispatchTaskByRoundRobin(std::shared_ptr<Task> spTask)
     return;
 }
 
-void NonLockThreadPool::dispatchTaskByRand(std::shared_ptr<Task> spTask)
+void NLTP::NonLockThreadPool::dispatchTaskByRand(std::shared_ptr<Task> spTask)
 {
     /* when queue is long enough */
     int i = rand() % m_threads.size();
-    m_threads.at(i)->addTask(spTask);
+    m_threads.at(i)->push(spTask);
     return;
 }
 
-void NonLockThreadPool::dispatchTaskToLeastLoad(std::shared_ptr<Task> spTask)
+void NLTP::NonLockThreadPool::dispatchTaskToLeastLoad(std::shared_ptr<Task> spTask)
 {
     unsigned int index = 0;
     unsigned int minTaskNum = 1000000;
     /* find least load thread */
-    for (unsigned int i = 0; i < m_threads.size(); i++) {
-        if (m_threads.at(i)->m_alive.load()) {
-            unsigned int taskNum = m_threads.at(i)->getTaskNum();
+    for (int i = 0; i < m_threads.size(); i++) {
+        if (m_threads.at(i)->alive.load()) {
+            unsigned int taskNum = m_threads.at(i)->queueSize();
             std::cout<<"least load task: "<<taskNum<<std::endl;
             if (minTaskNum > taskNum) {
                 minTaskNum = taskNum;
@@ -169,11 +167,11 @@ void NonLockThreadPool::dispatchTaskToLeastLoad(std::shared_ptr<Task> spTask)
             }
         }
     }
-    m_threads.at(index)->addTask(spTask);
+    m_threads.at(index)->push(spTask);
     return;
 }
 
-void NonLockThreadPool::loadBalance()
+void NLTP::NonLockThreadPool::rebalance()
 {
     /* find max-task-num and min-task-num */
     unsigned int minIndex = 0;
@@ -181,8 +179,8 @@ void NonLockThreadPool::loadBalance()
     unsigned int minTaskNum = 1000000;
     unsigned int maxTaskNum = 0;
     for (unsigned int i = 0; i < m_threads.size(); i++) {
-        if (m_threads.at(i)->m_alive.load()) {
-            unsigned int taskNum = m_threads.at(i)->getTaskNum();
+        if (m_threads.at(i)->alive.load()) {
+            unsigned int taskNum = m_threads.at(i)->queueSize();
             if (minTaskNum > taskNum) {
                 minTaskNum = taskNum;
                 minIndex = i;
@@ -197,30 +195,30 @@ void NonLockThreadPool::loadBalance()
     std::cout<<"------------balance : "<<maxTaskNum - minTaskNum<<"-------------"<<std::endl;
     for (unsigned int i = 0; i < maxTaskNum - minTaskNum; i++) {
         std::shared_ptr<Task> spTask = m_threads.at(maxIndex)->pop_back();
-        m_threads.at(minIndex)->addTask(spTask);
+        m_threads.at(minIndex)->push(spTask);
     }
     return;
 }
 
-int NonLockThreadPool::addTask(std::shared_ptr<Task> spTask)
+int NLTP::NonLockThreadPool::addTask(std::shared_ptr<Task> spTask)
 {
     if (spTask == nullptr) {
         return -1;
     }
     /* load balance */
-    if (m_balance.load()) {
-        loadBalance();
-        m_balance.store(false);
+    if (doRebalance.load()) {
+        rebalance();
+        doRebalance.store(false);
     }
     /* dispatch task */
-    switch (m_policy) {
-        case THREADPOOL_ROUNDROBIN:
+    switch (policy) {
+        case ROUNDROBIN:
             dispatchTaskByRoundRobin(spTask);
             break;
-        case THREADPOOL_RAND:
+        case RAND:
             dispatchTaskByRand(spTask);
             break;
-        case THREADPOOL_LEASTLOAD:
+        case LEASTLOAD:
             dispatchTaskToLeastLoad(spTask);
             break;
         default:
@@ -229,12 +227,12 @@ int NonLockThreadPool::addTask(std::shared_ptr<Task> spTask)
     return 0;
 }
 
-int NonLockThreadPool::getThreadNum()
+int NLTP::NonLockThreadPool::getThreadNum()
 { 
     return m_aliveThreadNum;
 }
 
-void NonLockThreadPool::increaseThread()
+void NLTP::NonLockThreadPool::increaseThread()
 {
     /* do statistic */
 
@@ -244,8 +242,8 @@ void NonLockThreadPool::increaseThread()
         spThread->createWorkingThread(m_queueLen);
         m_threads.push_back(spThread);
     } else {
-        for (unsigned int i = 0; i < m_threads.size(); i++) {
-            if (m_threads.at(i)->m_alive.load() == false) {
+        for (int i = 0; i < m_threads.size(); i++) {
+            if (m_threads.at(i)->alive.load() == false) {
                 m_threads.at(i)->createWorkingThread(m_queueLen);
                 break;
             }
@@ -255,38 +253,22 @@ void NonLockThreadPool::increaseThread()
     return;
 }
 
-void NonLockThreadPool::decreaseThread()
-{   
-    /* do statistic */
-    /* stop thread */
-    unsigned int from = m_threads.size() - 1;
-    m_threads.at(from)->release();
-    /* migrate task */
-    unsigned int to = (index - 1) % (m_threads.size() - 1);
-    m_thread.at(to).migrate(m_threads.at(from));   
-    m_aliveThreadNum--;
-    return;
-}
 
-void NonLockThreadPool::admin()
+void NLTP::NonLockThreadPool::admin()
 {
     while (m_alive.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         /* load balance */
-        m_balance.store(true);
-        /* decrease thread */
-        if (false) {
-            decreaseThread();
-        }
+        doRebalance.store(true);
     }
     return;
 }
-void NonLockThreadPool::shutdown()
+void NLTP::NonLockThreadPool::shutdown()
 {
     std::cout<<"alive thread num :"<<m_threads.size()<<std::endl;
-    for (unsigned int i = 0; i < m_threads.size(); i++) {
-        if (m_threads.at(i)->m_alive.load()) {
-            m_threads.at(i)->m_alive.store(false);
+    for (int i = 0; i < m_threads.size(); i++) {
+        if (m_threads.at(i)->alive.load()) {
+            m_threads.at(i)->alive.store(false);
         }
     }
     m_alive.store(false);
